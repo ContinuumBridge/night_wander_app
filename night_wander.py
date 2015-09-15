@@ -14,6 +14,7 @@ import os.path
 import time
 from cbcommslib import CbApp, CbClient
 from cbconfig import *
+from cbutils import nicetime, betweenTimes
 import requests
 import json
 from twisted.internet import reactor
@@ -24,44 +25,9 @@ from email.mime.text import MIMEText
 CONFIG_FILE                       = CB_CONFIG_DIR + "night_wander.config"
 CID                               = "CID164"  # Client ID
 
-def betweenTimes(t, t1, t2):
-    # True if epoch t is between times of day t1 and t2 (in 24-hour clock format: "23:10")
-    t1secs = (60*int(t1.split(":")[0]) + int(t1.split(":")[1])) * 60
-    t2secs = (60*int(t2.split(":")[0]) + int(t2.split(":")[1])) * 60
-    stamp = time.strftime("%Y %b %d %H:%M", time.localtime(t)).split()
-    today = stamp
-    today[3] = "00:00"
-    today_e = time.mktime(time.strptime(" ".join(today), "%Y %b %d %H:%M"))
-    yesterday_e = today_e - 24*3600
-    #print "today_e: ", today_e, "yesterday_e: ", yesterday_e
-    tt1 = [yesterday_e + t1secs, today_e + t1secs]
-    tt2 = [yesterday_e + t2secs, today_e + t2secs]
-    #print "tt1: ", tt1, " tt2: ", tt2
-    smallest = 50000
-    decision = False
-    if t - tt1[0] < smallest and t - tt1[0] > 0:
-        smallest = t - tt1[0]
-        decision = True
-    if t - tt2[0] < smallest and t -tt2[0] > 0:
-        smallest = t - tt2[0]
-        decision = False
-    if t - tt1[1] < smallest and t -tt1[1] > 0:
-        smallest = t - tt1[1]
-        decision = True
-    if t - tt2[1] < smallest and t - tt2[1] > 0:
-        smallest = t - tt2[1]
-        decision = False
-    return decision
-
-def nicetime(timeStamp):
-    localtime = time.localtime(timeStamp)
-    milliseconds = '%03d' % int((timeStamp - int(timeStamp)) * 1000)
-    now = time.strftime('%H:%M:%S, %d-%m-%Y', localtime)
-    return now
-
 class NightWander():
-    def __init__(self, bridge_id):
-        self.bridge_id = bridge_id
+    def __init__(self):
+        self.bridge_id = None
         self.lastActive = 0
         self.activatedSensors = []
         self.s = []
@@ -122,6 +88,7 @@ class App(CbApp):
         self.idToName = {} 
         self.entryExitIDs = []
         self.hotDrinkIDs = []
+        self.nightWander = NightWander()
         #CbApp.__init__ MUST be called
         CbApp.__init__(self, argv)
 
@@ -148,20 +115,33 @@ class App(CbApp):
         self.client.receive(message)
 
     def onClientMessage(self, message):
-        #self.cbLog("debug", "onClientMessage, message: " + str(json.dumps(message, indent=4)))
+        self.cbLog("debug", "onClientMessage, message: " + str(json.dumps(message, indent=4)))
         global config
         if "config" in message:
             if "warning" in message["config"]:
                 self.cbLog("warning", "onClientMessage: " + str(json.dumps(message["config"], indent=4)))
             else:
                 try:
-                    config = message["config"]
-                    with open(CONFIG_FILE, 'w') as f:
-                        json.dump(config, f)
-                    self.cbLog("info", "Config updated")
+                    newConfig = message["config"]
+                    copyConfig = config.copy()
+                    copyConfig.update(newConfig)
+                    if copyConfig != config:
+                        self.cbLog("debug", "onClientMessage. Updating config from client message")
+                        config = copyConfig.copy()
+                        with open(CONFIG_FILE, 'w') as f:
+                            json.dump(config, f)
+                        self.cbLog("info", "Config updated")
+                        self.readLocalConfig()
+                        # With a new config, send init message to all connected adaptors
+                        for i in self.adtInstances:
+                            init = {
+                                "id": self.id,
+                                "appClass": self.appClass,
+                                "request": "init"
+                            }
+                            self.sendMessage(init, i)
                 except Exception as ex:
                     self.cbLog("warning", "onClientMessage, could not write to file. Type: " + str(type(ex)) + ", exception: " +  str(ex.args))
-                self.readLocalConfig()
 
     def onAdaptorData(self, message):
         #self.cbLog("debug", "onAdaptorData, message: " + str(json.dumps(message, indent=4)))
@@ -192,12 +172,7 @@ class App(CbApp):
                 self.cbLog("debug", "Read local config")
                 config.update(newConfig)
         except Exception as ex:
-            self.cbLog("warning", "LoCAL config does not exist or file is corrupt. Exception: " + str(type(ex)) + str(ex.args))
-        for c in config:
-            if c.lower in ("true", "t", "1"):
-                config[c] = True
-            elif c.lower in ("false", "f", "0"):
-                config[c] = False
+            self.cbLog("warning", "Local config does not exist or file is corrupt. Exception: " + str(type(ex)) + str(ex.args))
         self.cbLog("debug", "Config: " + str(json.dumps(config, indent=4)))
 
     def onConfigureMessage(self, managerConfig):
@@ -217,7 +192,7 @@ class App(CbApp):
         self.client.onClientMessage = self.onClientMessage
         self.client.sendMessage = self.sendMessage
         self.client.cbLog = self.cbLog
-        self.nightWander = NightWander(self.bridge_id)
+        self.nightWander.bridge_id = self.bridge_id
         self.nightWander.cbLog = self.cbLog
         self.nightWander.client = self.client
         self.nightWander.setNames(idToName2)
