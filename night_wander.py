@@ -33,8 +33,9 @@ class NightWander():
         self.s = []
         self.waiting = False
 
-    def setNames(self, idToName):
+    def setIDs(self, bridge_id, idToName):
         self.idToName = idToName
+        self.bridge_id = bridge_id
 
     def onChange(self, devID, timeStamp, value):
         self.cbLog("debug", "onChange, devID: " + devID + " value: " + value)
@@ -125,7 +126,7 @@ class App(CbApp):
                     newConfig = message["config"]
                     copyConfig = config.copy()
                     copyConfig.update(newConfig)
-                    if copyConfig != config:
+                    if copyConfig != config or not os.path.isfile(CONFIG_FILE):
                         self.cbLog("debug", "onClientMessage. Updating config from client message")
                         config = copyConfig.copy()
                         with open(CONFIG_FILE, 'w') as f:
@@ -192,10 +193,11 @@ class App(CbApp):
         self.client.onClientMessage = self.onClientMessage
         self.client.sendMessage = self.sendMessage
         self.client.cbLog = self.cbLog
+        self.client.loadSaved()
         self.nightWander.bridge_id = self.bridge_id
         self.nightWander.cbLog = self.cbLog
         self.nightWander.client = self.client
-        self.nightWander.setNames(idToName2)
+        self.nightWander.setIDs(self.bridge_id, self.idToName)
         self.setState("starting")
 
 if __name__ == '__main__':
