@@ -6,7 +6,11 @@
 
 # Default values:
 config = {
-    "night_wandering": "False"
+    "night_wandering": "True",
+    "data_send_delay": 2,
+    "night_start": "23:00",
+    "night_end": "07:00",
+    "ignore_time": 600
 }
 
 import sys
@@ -14,12 +18,11 @@ import os.path
 import time
 from cbcommslib import CbApp, CbClient
 from cbconfig import *
-from cbutils import nicetime, betweenTimes
+from cbutils import nicetime, betweenTimes, hourMin2Epoch
 import requests
 import json
 from twisted.internet import reactor
 import smtplib
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 CONFIG_FILE                       = CB_CONFIG_DIR + "night_wander.config"
@@ -28,41 +31,77 @@ CID                               = "CID164"  # Client ID
 class NightWander():
     def __init__(self):
         self.bridge_id = None
-        self.lastActive = 0
         self.activatedSensors = []
         self.s = []
         self.waiting = False
+        self.state = {"wanderCount": 0}
+        self.saveFile = None
 
     def setIDs(self, bridge_id, idToName):
         self.idToName = idToName
         self.bridge_id = bridge_id
 
+    def reportEnds(self):
+        #self.cbLog("debug", "reportEnds")
+        try:
+            now = time.strftime("%H:%M:%S", time.localtime()).split(":")[0:2]  # Format: ["06", "30"]
+            nightEnd = config["night_end"].split(":")
+            #self.cbLog("debug", "reportEnds, now: " + str(now) + ", nightEnd: " + str(nightEnd))
+            if int(nightEnd[0]) == int(now[0]) and int(nightEnd[1]) == int(now[1]):
+                timeStamp = time.time()
+                values = {
+                    "name": self.bridge_id + "/Night_Wander/" + "night_start",
+                    "points": [[int(timeStamp*1000), int(hourMin2Epoch(config["night_start"]))*1000]]
+                }
+                self.storeValues(values)
+                values = {
+                    "name": self.bridge_id + "/Night_Wander/" + "night_end",
+                    "points": [[int(timeStamp*1000), int(hourMin2Epoch(config["night_end"]))*1000]]
+                }
+                self.storeValues(values)
+                values = {
+                    "name": self.bridge_id + "/Night_Wander/" + "wander_count",
+                    "points": [[int(timeStamp*1000), self.state["wanderCount"]]]
+                }
+                self.storeValues(values)
+                self.state["wanderCount"] = 0
+        except Exception as ex:
+            self.cbLog("warning", "Problem running reportEnds. Type: " + str(type(ex)) + "exception: " +  str(ex.args))
+        reactor.callLater(60, self.reportEnds)
+
     def onChange(self, devID, timeStamp, value):
-        self.cbLog("debug", "onChange, devID: " + devID + " value: " + value)
+        #self.cbLog("debug", "onChange, devID: " + devID + " value: " + value)
         if value == "on":
             alert = betweenTimes(timeStamp, config["night_start"], config["night_end"])
-            self.cbLog("debug", "alert: " + str(alert))
+            self.cbLog("debug", "alert: " + str(alert) + ", activatedSensors: " + str(self.activatedSensors))
             if alert:
                 sensor = self.idToName[devID]
                 self.cbLog("debug", "sensor: " + sensor)
+                values = {
+                    "name": self.bridge_id + "/Night_Wander/" + sensor,
+                    "points": [[int(timeStamp*1000), 1]]
+                }
+                self.storeValues(values)
                 if sensor not in self.activatedSensors:
-                    self.activatedSensors.append(self.idToName[devID])
-                if timeStamp - self.lastActive > config["night_ignore_time"]:
-                    self.cbLog("debug", "Night Wander: " + str(alert) + ": " + str(time.asctime(time.localtime(timeStamp))) + \
-                    " sensors: " + str(self.activatedSensors))
-                    msg = {"m": "alert",
-                           "a": "Night wandering detected by " + str(", ".join(self.activatedSensors)) + " at " + nicetime(timeStamp),
-                           "t": timeStamp
-                          }
-                    self.client.send(msg)
-                    self.cbLog("debug", "msg send to client: " + str(json.dumps(msg, indent=4)))
-                    self.lastActive = timeStamp
-                    self.activatedSensors = []
-                    values = {
-                        "name": self.bridge_id + "/Night_Wander/" + sensor,
-                        "points": [[int(timeStamp*1000), 1]]
-                    }
-                    self.storeValues(values)
+                    self.activatedSensors.append(sensor)
+                    if len(self.activatedSensors) == 1:
+                        self.state["wanderCount"] += 1
+                        reactor.callLater(config["night_ignore_time"], self.endIgnoreTime)
+                        self.reportAlert(timeStamp)
+
+    def endIgnoreTime(self):
+        self.cbLog("debug", "endIgnoreTime, activatedSensors: " + str(self.activatedSensors))
+        if len(self.activatedSensors) > 1:
+            self.reportAlert(time.time())
+        self.activatedSensors = []
+
+    def reportAlert(self, timeStamp):
+        msg = {"m": "alert",
+               "a": "Night wandering detected by " + str(", ".join(self.activatedSensors)) + " at " + nicetime(timeStamp),
+               "t": timeStamp
+              }
+        self.client.send(msg)
+        self.cbLog("debug", "msg send to client: " + str(json.dumps(msg, indent=4)))
 
     def sendValues(self):
         msg = {"m": "data",
@@ -78,6 +117,30 @@ class NightWander():
         if not self.waiting:
             self.waiting = True
             reactor.callLater(config["data_send_delay"], self.sendValues)
+
+    def save(self):
+        try:
+            if self.state:
+                with open(self.saveFile, 'w') as f:
+                    json.dump(self.state, f)
+                    self.cbLog("debug", "saving state:: " + str(self.bodies))
+        except Exception as ex:
+            self.cbLog("warning", "Problem saving state. Type: " + str(type(ex)) + "exception: " +  str(ex.args))
+
+    def loadSaved(self):
+        try:
+            if os.path.isfile(self.saveFile):
+                with open(self.saveFile, 'r') as f:
+                    self.state = json.load(f)
+                self.cbLog("debug", "Loaded saved state: " + str(self.state))
+        except Exception as ex:
+            self.cbLog("warning", "Problem loading saved state. Exception. Type: " + str(type(ex)) + "exception: " +  str(ex.args))
+        finally:
+            try:
+                os.remove(self.saveFile)
+                self.cbLog("debug", "deleted saved state file")
+            except Exception as ex:
+                self.cbLog("debug", "Cannot remove saved state file. Exception. Type: " + str(type(ex)) + "exception: " +  str(ex.args))
 
 class App(CbApp):
     def __init__(self, argv):
@@ -102,6 +165,10 @@ class App(CbApp):
                "status": "state",
                "state": self.state}
         self.sendManagerMessage(msg)
+
+    def onStop(self):
+        self.nightWander.save()
+        self.client.save()
 
     def onConcMessage(self, message):
         #self.cbLog("debug", "onConcMessage, message: " + str(json.dumps(message, indent=4)))
@@ -198,6 +265,9 @@ class App(CbApp):
         self.nightWander.cbLog = self.cbLog
         self.nightWander.client = self.client
         self.nightWander.setIDs(self.bridge_id, self.idToName)
+        self.nightWander.saveFile = CB_CONFIG_DIR + self.id + ".savestate"
+        self.nightWander.loadSaved()
+        self.nightWander.reportEnds()
         self.setState("starting")
 
 if __name__ == '__main__':
