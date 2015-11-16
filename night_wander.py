@@ -113,10 +113,13 @@ class NightWander():
         self.waiting = False
 
     def storeValues(self, values):
-        self.s.append(values)
-        if not self.waiting:
-            self.waiting = True
-            reactor.callLater(config["data_send_delay"], self.sendValues)
+        if time.time() > 100000:  # To stop writing if time not updated by NTP
+            self.s.append(values)
+            if not self.waiting:
+                self.waiting = True
+                reactor.callLater(config["data_send_delay"], self.sendValues)
+            else:
+                self.cbLog("debug", "Values not stored because time is in 1970")
 
     def save(self):
         try:
