@@ -151,7 +151,7 @@ class App(CbApp):
         self.state = "stopped"
         self.status = "ok"
         self.devices = []
-        self.devServices = [] 
+        self.devTypes = [] 
         self.idToName = {} 
         self.entryExitIDs = []
         self.hotDrinkIDs = []
@@ -217,17 +217,27 @@ class App(CbApp):
     def onAdaptorData(self, message):
         #self.cbLog("debug", "onAdaptorData, message: " + str(json.dumps(message, indent=4)))
         if message["characteristic"] == "binary_sensor":
-            self.nightWander.onChange(message["id"], message["timeStamp"], message["data"])
+            if message["id"] in self.devTypes:
+                if self.devTypes[message["id"]] == "inverted":
+                    if message["data"] == "on":
+                        state = "off"
+                    else:
+                        state = "on"
+            else:
+                state = message["data"]
+            self.nightWander.onChange(message["id"], message["timeStamp"], state)
 
     def onAdaptorService(self, message):
         #self.cbLog("debug", "onAdaptorService, message: " + str(json.dumps(message, indent=4)))
         if self.state == "starting":
             self.setState("running")
-        self.devServices.append(message)
         serviceReq = []
         for p in message["service"]:
             # Based on services offered & whether we want to enable them
             if p["characteristic"] == "binary_sensor":
+                if "type" in p:
+                    if p["type"] == "inverted":
+                        self.devTypes[message["id"]] = "inverted"
                 serviceReq.append({"characteristic": "binary_sensor", "interval": 0})
         msg = {"id": self.id,
                "request": "service",
