@@ -1,9 +1,9 @@
 {
     "exe": "night_wander.py", 
     "name": "Night Wander", 
-    "url": "https://github.com/ContinuumBridge/night_wander_app/archive/v1.4.0.tar.gz", 
+    "url": "https://github.com/ContinuumBridge/night_wander_app/archive/v1.4.1.tar.gz", 
     "app_resource": "/api/bridge/v1/app/28", 
-    "version": "1.4.0", 
+    "version": "1.4.1", 
     "provider": "ContinuumBridge", 
     "description": "An app to check and report on activity between defined times"
 }

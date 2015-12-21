@@ -151,7 +151,7 @@ class App(CbApp):
         self.state = "stopped"
         self.status = "ok"
         self.devices = []
-        self.devTypes = [] 
+        self.devTypes = {} 
         self.idToName = {} 
         self.entryExitIDs = []
         self.hotDrinkIDs = []
